@@ -60,7 +60,7 @@ def _make_session(verify_ssl: bool = True) -> requests.Session:
     if not verify_ssl:
         adapter = _TLSAdapter(max_retries=Retry(total=3, backoff_factor=2, status_forcelist=[500, 502, 503, 504]))
     else:
-        adapter = HTTPAdapter(max_retries=Retry(total=3, backoff_factor=2, status_forcelist=[500, 502, 503, 504]))
+        adapter = HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504]))
 
     session.mount("https://", adapter)
     session.mount("http://", adapter)
