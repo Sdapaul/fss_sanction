@@ -75,10 +75,11 @@ def build_email_body(all_data: dict, run_date: datetime) -> str:
 
 def main():
     now = datetime.now(KST)
-    yesterday = now - timedelta(days=1)
+    lookback_days = int(os.environ.get("LOOKBACK_DAYS", "1"))
+    since_date = now - timedelta(days=lookback_days)
 
     logger.info(f"=== 스크래핑 시작: {now.strftime('%Y-%m-%d %H:%M:%S KST')} ===")
-    logger.info(f"대상 기간: {yesterday.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')}")
+    logger.info(f"대상 기간: {since_date.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')} (최근 {lookback_days}일, LOOKBACK_DAYS={lookback_days})")
 
     scrapers = [
         FssSanctionScraper(),
@@ -94,7 +95,7 @@ def main():
         for scraper in scrapers:
             try:
                 logger.info(f"[{scraper.name}] 스크래핑 시작...")
-                items, attachments = scraper.scrape(since_date=yesterday, download_dir=tmpdir)
+                items, attachments = scraper.scrape(since_date=since_date, download_dir=tmpdir)
                 all_data[scraper.sheet_name] = items
                 all_attachment_paths.extend(attachments)
                 logger.info(f"[{scraper.name}] 완료: {len(items)}건, 첨부 {len(attachments)}개")

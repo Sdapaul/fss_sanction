@@ -102,6 +102,7 @@ class FssManagementScraper:
                 break
 
             found_old = False
+            total_on_page = 0
             for row in rows:
                 cols = row.find_all("td")
                 if len(cols) < 4:
@@ -110,6 +111,7 @@ class FssManagementScraper:
                 num = cols[0].get_text(strip=True)
                 if not num.isdigit():
                     continue
+                total_on_page += 1
 
                 org = cols[1].get_text(strip=True)
                 date_str = cols[2].get_text(strip=True)
@@ -141,6 +143,14 @@ class FssManagementScraper:
                 items.append(item)
                 time.sleep(0.5)
 
+            logger.info(
+                f"  [{self.name}] 페이지 {page}: {total_on_page}행 발견 / 신규 누적 {len(items)}건"
+            )
+            if total_on_page == 0 and page == 1:
+                logger.warning(
+                    f"  [{self.name}] 1페이지 파싱 가능 행 없음 — "
+                    f"POST 파라미터 또는 HTML 구조 확인 필요.\n  응답 미리보기:\n{resp.text[:1500]}"
+                )
             if found_old:
                 break
             if not _has_next_page(soup, page):
