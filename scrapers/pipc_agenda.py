@@ -104,14 +104,6 @@ class PipcAgendaScraper:
     def scrape(self, since_date: datetime, download_dir: str):
         items = []
         attachments = []
-
-        # 홈페이지 방문으로 쿠키 획득
-        try:
-            self._request("GET", BASE_URL, timeout=15)
-            time.sleep(1)
-        except Exception as e:
-            logger.warning(f"초기 접근 실패: {e}")
-
         since_str = since_date.strftime("%Y-%m-%d")
         page = 1
 
