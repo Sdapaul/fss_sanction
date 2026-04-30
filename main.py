@@ -106,7 +106,10 @@ def main():
         total_items = sum(len(v) for v in all_data.values())
         logger.info(f"전체 신규 항목: {total_items}건")
 
-        # 신규 항목이 없어도 일일 리포트는 발송 (빈 엑셀)
+        if total_items == 0:
+            logger.info("신규 제재 내역이 없습니다. 이메일 발송을 건너뜁니다.")
+            return
+
         excel_filename = f"제재정보_{now.strftime('%Y%m%d')}.xlsx"
         excel_path = os.path.join(tmpdir, excel_filename)
         write_to_excel(all_data, excel_path)
