@@ -179,13 +179,15 @@ class PipcAgendaScraper:
                     "의결일": date_str,
                     "조회수": views,
                     "상세URL": "",
+                    "상세내용": "",
                     "첨부파일명": "",
                 }
 
                 detail_url = self._parse_detail_url(title_col, cols)
                 if detail_url:
                     item["상세URL"] = detail_url
-                    file_names, file_paths = self._get_detail_attachments(detail_url, download_dir)
+                    content, file_names, file_paths = self._get_detail(detail_url, download_dir)
+                    item["상세내용"] = content
                     item["첨부파일명"] = "; ".join(file_names)
                     attachments.extend(file_paths)
 
@@ -210,58 +212,99 @@ class PipcAgendaScraper:
         return items, attachments
 
     def _parse_detail_url(self, title_col, cols) -> str:
-        # 제목 셀 링크 우선
-        a = title_col.find("a", href=True)
-        if a:
+        for col in [title_col] + list(cols):
+            a = col.find("a", href=True)
+            if not a:
+                continue
             href = a["href"]
-            if href.startswith("/"):
-                return BASE_URL + href
+            if href.startswith("javascript"):
+                continue
             if href.startswith("http"):
                 return href
-            if not href.startswith("javascript"):
-                return BASE_URL + "/" + href
-
-        # 다른 셀에서 링크 탐색
-        for col in cols:
-            a = col.find("a", href=True)
-            if a:
-                href = a["href"]
-                if href.startswith("/"):
-                    return BASE_URL + href
-                if href.startswith("http"):
-                    return href
+            if href.startswith("/"):
+                return BASE_URL + href
+            if href.startswith("?"):
+                # ?op=view&... 상대 쿼리 → 현재 목록 URL의 경로에 붙임
+                return LIST_URL + href
         return ""
 
-    def _get_detail_attachments(self, url: str, download_dir: str):
+    def _get_detail(self, url: str, download_dir: str):
         try:
             time.sleep(0.5)
             resp = self._request("GET", url, timeout=30)
             resp.encoding = "utf-8"
             soup = BeautifulSoup(resp.text, "lxml")
 
+            # 상세 내용: tbView 테이블에서 의안번호·공시일(작성일)·본문 추출
+            content_parts = []
+            body_text = ""
+            table = soup.select_one("table.tbView")
+            if table:
+                for tr in table.find_all("tr"):
+                    ths = tr.find_all("th")
+                    tds = tr.find_all("td")
+                    if not ths:
+                        # thead 없이 colspan td만 있는 행 = 실제 본문
+                        for td in tds:
+                            if td.get("colspan"):
+                                txt = td.get_text(separator=" ", strip=True)
+                                if len(txt) > 5 and "다운로드" not in txt:
+                                    body_text = txt[:300]
+                        continue
+                    for th, td in zip(ths, tds):
+                        key = th.get_text(strip=True)
+                        if key in ("의안번호", "의결일", "작성일"):
+                            content_parts.append(f"{key}: {td.get_text(strip=True)}")
+            if body_text:
+                content_parts.append(f"본문: {body_text}")
+            content = " | ".join(content_parts)[:800]
+
+            # 첨부파일: fn_egov_downFileCnv onclick에서 파라미터 추출
             file_names, file_paths = [], []
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                fn = a.get_text(strip=True)
-                if not fn:
+            dl_calls = re.findall(
+                r"fn_egov_downFileCnv\('([^']+)',\s*'?(\d+)'?,\s*'([^']+)'\)",
+                resp.text
+            )
+            # 파일명: .download div 텍스트 노드에서 추출
+            dl_divs = soup.select(".download > div.download, .download div")
+            fn_map: dict[tuple, str] = {}
+            for div in dl_divs:
+                onclick_a = div.find("a", onclick=True)
+                if not onclick_a:
                     continue
-
-                is_file = any(k in href for k in ["download", "filedown", "atch", "file"]) or any(
-                    href.lower().endswith(ext) for ext in [".pdf", ".hwp", ".hwpx", ".xlsx", ".docx", ".zip"]
-                )
-                if not is_file:
+                m = re.search(r"fn_egov_downFileCnv\('([^']+)',\s*'?(\d+)'?,\s*'([^']+)'\)", onclick_a.get("onclick", ""))
+                if not m:
                     continue
+                atch_id, sn, ext = m.group(1), m.group(2), m.group(3)
+                # 텍스트 노드에서 파일명 추출 (img 태그 제외)
+                fn = ""
+                for node in div.children:
+                    if hasattr(node, "name") and node.name in ("img", "span", "script"):
+                        continue
+                    txt = str(node).strip()
+                    if txt:
+                        fn = txt
+                        break
+                fn = fn or f"file_{sn}.{ext}"
+                fn_map[(atch_id, sn, ext)] = fn
 
-                file_url = (BASE_URL + href) if href.startswith("/") else href
-                path = _download_file(self.session, file_url, fn, download_dir, self.sheet_name)
+            seen_files: set = set()
+            for atch_id, sn, ext in dl_calls:
+                key = (atch_id, sn, ext)
+                if key in seen_files:
+                    continue
+                seen_files.add(key)
+                fn = fn_map.get(key, f"file_{sn}.{ext}")
+                dl_url = f"{BASE_URL}/np/cmm/fms/FileDown.do?atchFileId={atch_id}&fileSn={sn}&fileExtsn={ext}"
+                path = _download_file(self.session, dl_url, fn, download_dir, self.sheet_name)
                 if path:
                     file_names.append(fn)
                     file_paths.append(path)
 
-            return file_names, file_paths
+            return content, file_names, file_paths
         except Exception as e:
             logger.error(f"상세 페이지 오류 {url}: {e}")
-            return [], []
+            return "", [], []
 
 
 def _has_next_page(soup: BeautifulSoup, current_page: int) -> bool:

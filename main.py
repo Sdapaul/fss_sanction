@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 from scrapers.fss_sanction import FssSanctionScraper
 from scrapers.fss_management import FssManagementScraper
 from scrapers.pipc_agenda import PipcAgendaScraper
+from scrapers.pipc_bbs import PipcResultScraper, PipcNoticeScraper
 from utils.excel_writer import write_to_excel
 from utils.email_sender import send_email
 
@@ -74,9 +75,9 @@ def build_email_body(all_data: dict, run_date: datetime) -> str:
         lines.append(f"▶ {source}  →  {count}건")
 
         for row in rows[:10]:
-            org = row.get("제재대상기관") or row.get("제목") or ""
-            date = row.get("제재조치요구일") or row.get("의결일") or ""
-            dept = row.get("관련부서") or row.get("회의구분") or ""
+            org = (row.get("제재대상기관") or row.get("제목") or "")[:50]
+            date = row.get("제재조치요구일") or row.get("의결일") or row.get("게시일") or ""
+            dept = row.get("관련부서") or row.get("회의구분") or row.get("작성부서") or ""
             lines.append(f"   • {org}  ({date})  [{dept}]")
 
         if count > 10:
@@ -108,6 +109,8 @@ def main():
         FssSanctionScraper(),
         FssManagementScraper(),
         PipcAgendaScraper(),
+        PipcResultScraper(),
+        PipcNoticeScraper(),
     ]
 
     all_data = {}
