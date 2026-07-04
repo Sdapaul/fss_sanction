@@ -81,6 +81,9 @@ def _select_rows(soup: BeautifulSoup) -> list:
     return []
 
 
+SANCTION_KEYWORDS = ["위반행위", "시정조치", "과징금", "과태료", "시정명령", "처분"]
+
+
 class PipcAgendaScraper:
     name = "PIPC_의결결정"
     sheet_name = "PIPC의결결정"
@@ -89,6 +92,7 @@ class PipcAgendaScraper:
         # SSL 검증 활성화로 먼저 시도, 실패 시 비활성화
         self.session = _make_session(verify_ssl=True)
         self._ssl_fallback = False
+        self.max_processed_num = 0  # 비제재 포함 처리된 최대 번호
 
     def _request(self, method: str, url: str, **kwargs):
         """SSL 오류 시 verify=False 로 자동 재시도."""
@@ -101,11 +105,12 @@ class PipcAgendaScraper:
                 self.session = _make_session(verify_ssl=False)
             return self.session.request(method, url, **kwargs)
 
-    def scrape(self, since_date: datetime, download_dir: str):
+    def scrape(self, since_date: datetime, download_dir: str, last_num: int = 0):
         items = []
         attachments = []
         since_str = since_date.strftime("%Y-%m-%d")
         page = 1
+        seen_nums = set()
 
         while True:
             logger.info(f"  [{self.name}] 페이지 {page} 조회 중...")
@@ -136,6 +141,11 @@ class PipcAgendaScraper:
                 num = cols[0].get_text(strip=True)
                 if not num.isdigit():
                     continue
+
+                # 중복 항목 방지
+                if num in seen_nums:
+                    continue
+                seen_nums.add(num)
                 total_on_page += 1
 
                 meeting_type = cols[1].get_text(strip=True)
@@ -144,8 +154,22 @@ class PipcAgendaScraper:
                 date_str = cols[3].get_text(strip=True)   # YYYY-MM-DD
                 views = cols[5].get_text(strip=True) if len(cols) > 5 else ""
 
-                if date_str and date_str < since_str:
-                    found_old = True
+                # 번호 기반 추적 (last_num > 0이면 우선 사용)
+                if last_num > 0:
+                    if int(num) <= last_num:
+                        found_old = True
+                        continue
+                else:
+                    if date_str and date_str < since_str:
+                        found_old = True
+                        continue
+
+                # 처리된 최대 번호 갱신 (비제재 포함)
+                self.max_processed_num = max(self.max_processed_num, int(num))
+
+                # 제재 관련 항목만 수집 (침해요인 평가·정보제공 요청 등 비제재 제외)
+                if not any(kw in title for kw in SANCTION_KEYWORDS):
+                    logger.debug(f"  [{self.name}] 비제재 항목 제외: {title[:50]}")
                     continue
 
                 item = {

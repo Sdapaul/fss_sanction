@@ -12,6 +12,7 @@
   GMAIL_APP_PASSWORD  - Gmail 앱 비밀번호
   RECIPIENT_EMAILS    - 수신자 이메일 (쉼표 구분, 여러 개 가능)
 """
+import json
 import logging
 import os
 import tempfile
@@ -36,6 +37,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 KST = pytz.timezone("Asia/Seoul")
+STATE_FILE = "state.json"
+
+
+def load_state() -> dict:
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"state.json 읽기 실패: {e}")
+    return {}
+
+
+def save_state(state: dict):
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"state.json 저장 실패: {e}")
 
 
 def build_email_body(all_data: dict, run_date: datetime) -> str:
@@ -81,6 +101,9 @@ def main():
     logger.info(f"=== 스크래핑 시작: {now.strftime('%Y-%m-%d %H:%M:%S KST')} ===")
     logger.info(f"대상 기간: {since_date.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')} (최근 {lookback_days}일, LOOKBACK_DAYS={lookback_days})")
 
+    state = load_state()
+    logger.info(f"이전 수집 상태: {state}")
+
     scrapers = [
         FssSanctionScraper(),
         FssManagementScraper(),
@@ -93,9 +116,10 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         # 각 사이트 스크래핑
         for scraper in scrapers:
+            last_num = state.get(scraper.name, 0)
             try:
-                logger.info(f"[{scraper.name}] 스크래핑 시작...")
-                items, attachments = scraper.scrape(since_date=since_date, download_dir=tmpdir)
+                logger.info(f"[{scraper.name}] 스크래핑 시작... (last_num={last_num})")
+                items, attachments = scraper.scrape(since_date=since_date, download_dir=tmpdir, last_num=last_num)
                 all_data[scraper.sheet_name] = items
                 all_attachment_paths.extend(attachments)
                 logger.info(f"[{scraper.name}] 완료: {len(items)}건, 첨부 {len(attachments)}개")
@@ -105,6 +129,22 @@ def main():
 
         total_items = sum(len(v) for v in all_data.values())
         logger.info(f"전체 신규 항목: {total_items}건")
+
+        # 수집된 항목으로 state 업데이트 (이메일 발송 여부와 무관하게 저장)
+        new_state = dict(state)
+        for scraper in scrapers:
+            # 비제재 포함 처리된 최대 번호가 있으면 우선 사용 (PIPC)
+            if getattr(scraper, "max_processed_num", 0) > 0:
+                new_state[scraper.name] = scraper.max_processed_num
+                continue
+            rows = all_data.get(scraper.sheet_name, [])
+            if rows:
+                num_key = "번호" if "번호" in rows[0] else "일련번호"
+                nums = [int(r[num_key]) for r in rows if str(r.get(num_key, "")).isdigit()]
+                if nums:
+                    new_state[scraper.name] = max(nums)
+        save_state(new_state)
+        logger.info(f"수집 상태 저장: {new_state}")
 
         if total_items == 0:
             logger.info("신규 제재 내역이 없습니다. 이메일 발송을 건너뜁니다.")

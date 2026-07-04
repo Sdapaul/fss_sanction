@@ -60,7 +60,7 @@ class FssManagementScraper:
     def __init__(self):
         self.session = _make_session()
 
-    def scrape(self, since_date: datetime, download_dir: str):
+    def scrape(self, since_date: datetime, download_dir: str, last_num: int = 0):
         items = []
         attachments = []
 
@@ -117,10 +117,16 @@ class FssManagementScraper:
                 date_str = cols[2].get_text(strip=True)
                 dept = cols[4].get_text(strip=True) if len(cols) > 4 else ""
 
-                date_clean = re.sub(r"\D", "", date_str)
-                if len(date_clean) == 8 and date_clean < since_str:
-                    found_old = True
-                    continue
+                # 번호 기반 추적 (last_num > 0이면 우선 사용)
+                if last_num > 0:
+                    if int(num) <= last_num:
+                        found_old = True
+                        continue
+                else:
+                    date_clean = re.sub(r"\D", "", date_str)
+                    if len(date_clean) == 8 and date_clean < since_str:
+                        found_old = True
+                        continue
 
                 item = {
                     "일련번호": num,
