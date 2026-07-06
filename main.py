@@ -12,6 +12,7 @@
   GMAIL_APP_PASSWORD  - Gmail 앱 비밀번호
   RECIPIENT_EMAILS    - 수신자 이메일 (쉼표 구분, 여러 개 가능)
 """
+import html
 import json
 import logging
 import os
@@ -59,7 +60,46 @@ def save_state(state: dict):
         logger.error(f"state.json 저장 실패: {e}")
 
 
+# 소스별 메타 정보: 목록 URL · 컬럼 정의 · 링크 키
+_SOURCE_META = {
+    "검사결과제재": {
+        "list_url": "https://www.fss.or.kr/fss/job/openInfo/list.do?menuNo=200476",
+        "source_name": "금융감독원 검사결과제재",
+        "columns": ["번호", "제재대상기관", "제재조치요구일", "관련부서"],
+        "url_key": "상세URL",
+    },
+    "경영유의사항": {
+        "list_url": "https://www.fss.or.kr/fss/job/openInfoImpr/list.do?menuNo=200483",
+        "source_name": "금융감독원 경영유의사항",
+        "columns": ["일련번호", "제재대상기관", "제재조치요구일", "관련부서"],
+        "url_key": "상세URL",
+    },
+    "PIPC의결결정": {
+        "list_url": "https://www.pipc.go.kr/np/default/agenda.do?mCode=E030010000",
+        "source_name": "개인정보보호위원회 의결·결정",
+        "columns": ["번호", "회의구분", "제목", "의결일"],
+        "url_key": "상세URL",
+        "title_key": "제목",
+    },
+    "PIPC_결과공표": {
+        "list_url": "https://www.pipc.go.kr/np/cop/bbs/selectBoardList.do?bbsId=BS258&mCode=C010040000",
+        "source_name": "개인정보보호위원회 결과의 공표",
+        "columns": ["번호", "제목", "작성부서", "게시일"],
+        "url_key": "상세URL",
+        "title_key": "제목",
+    },
+    "PIPC_공시송달": {
+        "list_url": "https://www.pipc.go.kr/np/cop/bbs/selectBoardList.do?bbsId=BS262&mCode=C010030000",
+        "source_name": "개인정보보호위원회 공시송달",
+        "columns": ["번호", "제목", "작성부서", "게시일"],
+        "url_key": "상세URL",
+        "title_key": "제목",
+    },
+}
+
+
 def build_email_body(all_data: dict, run_date: datetime) -> str:
+    """플레인텍스트 이메일 본문 (HTML 미지원 클라이언트용 fallback)."""
     lines = [
         "=" * 60,
         "  금융감독원 / 개인정보보호위원회  제재정보 일일 리포트",
@@ -72,16 +112,23 @@ def build_email_body(all_data: dict, run_date: datetime) -> str:
     for source, rows in all_data.items():
         count = len(rows)
         total += count
-        lines.append(f"▶ {source}  →  {count}건")
+        meta = _SOURCE_META.get(source, {})
+        list_url = meta.get("list_url", "")
+        source_name = meta.get("source_name", source)
+        lines.append(f"▶ {source_name}  →  {count}건")
+        if list_url:
+            lines.append(f"   출처: {list_url}")
 
-        for row in rows[:10]:
-            org = (row.get("제재대상기관") or row.get("제목") or "")[:50]
+        for row in rows:
+            org = row.get("제재대상기관") or row.get("제목") or ""
             date = row.get("제재조치요구일") or row.get("의결일") or row.get("게시일") or ""
             dept = row.get("관련부서") or row.get("회의구분") or row.get("작성부서") or ""
-            lines.append(f"   • {org}  ({date})  [{dept}]")
+            detail_url = row.get("상세URL", "")
+            line = f"   • {org}  ({date})  [{dept}]"
+            if detail_url:
+                line += f"\n     {detail_url}"
+            lines.append(line)
 
-        if count > 10:
-            lines.append(f"   ... 외 {count - 10}건 더 있습니다 (엑셀 첨부 파일 참조)")
         lines.append("")
 
     lines += [
@@ -92,6 +139,128 @@ def build_email_body(all_data: dict, run_date: datetime) -> str:
     ]
 
     return "\n".join(lines)
+
+
+def build_email_html(all_data: dict, run_date: datetime) -> str:
+    """HTML 이메일 본문: 소스별 출처 링크 + 상세URL 클릭 가능 테이블."""
+    total = sum(len(v) for v in all_data.values())
+    date_str = run_date.strftime("%Y년 %m월 %d일")
+
+    parts = [
+        '<!DOCTYPE html>',
+        '<html lang="ko">',
+        '<head><meta charset="utf-8"></head>',
+        '<body style="font-family:\'Malgun Gothic\',\'Apple SD Gothic Neo\',sans-serif;'
+        'background:#f4f6f9;margin:0;padding:20px;">',
+        '<div style="max-width:920px;margin:0 auto;background:#fff;border-radius:8px;'
+        'overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.12);">',
+
+        # 헤더
+        '<div style="background:#003366;color:#fff;padding:22px 32px;">',
+        '<h1 style="margin:0;font-size:19px;font-weight:bold;">',
+        '금융감독원 / 개인정보보호위원회 &nbsp;제재정보 일일 리포트</h1>',
+        f'<p style="margin:8px 0 0;font-size:13px;opacity:.85;">'
+        f'{date_str} &nbsp;·&nbsp; 신규 <strong>{total}건</strong></p>',
+        '</div>',
+
+        '<div style="padding:24px 32px;">',
+    ]
+
+    for sheet_name, rows in all_data.items():
+        if not rows:
+            continue
+
+        meta = _SOURCE_META.get(sheet_name, {})
+        list_url = meta.get("list_url", "")
+        source_name = meta.get("source_name", sheet_name)
+        columns = meta.get("columns", list(rows[0].keys())[:4])
+        url_key = meta.get("url_key", "상세URL")
+        title_key = meta.get("title_key", "")
+
+        # 섹션 헤더
+        parts.append('<div style="margin-bottom:28px;">')
+        parts.append(
+            '<h2 style="margin:0 0 10px;font-size:15px;color:#003366;'
+            'border-bottom:2px solid #003366;padding-bottom:8px;">'
+        )
+        if list_url:
+            parts.append(
+                f'<a href="{html.escape(list_url)}" style="color:#003366;text-decoration:none;">'
+                f'{html.escape(source_name)}</a>'
+            )
+        else:
+            parts.append(html.escape(source_name))
+        parts.append(
+            f' <span style="font-size:12px;font-weight:normal;color:#666;">({len(rows)}건)</span>'
+            '</h2>'
+        )
+
+        # 테이블
+        parts.append(
+            '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+        )
+
+        # 컬럼 헤더
+        th_style = ('padding:8px 10px;text-align:left;border:1px solid #d0d7e3;'
+                    'background:#e8eef5;white-space:nowrap;')
+        parts.append('<thead><tr>')
+        for col in columns:
+            parts.append(f'<th style="{th_style}">{html.escape(col)}</th>')
+        parts.append(f'<th style="{th_style}text-align:center;">상세</th>')
+        parts.append('</tr></thead>')
+
+        # 데이터 행
+        parts.append('<tbody>')
+        for i, row in enumerate(rows):
+            bg = '#fff' if i % 2 == 0 else '#f7f9fc'
+            parts.append(f'<tr style="background:{bg};">')
+            detail_url = row.get(url_key, "")
+            td_style = 'padding:7px 10px;border:1px solid #e8e8e8;'
+
+            for col in columns:
+                val = html.escape(str(row.get(col, "")))
+                # title_key 컬럼은 값 자체를 링크로 표시
+                if col == title_key and detail_url:
+                    parts.append(
+                        f'<td style="{td_style}">'
+                        f'<a href="{html.escape(detail_url)}" style="color:#0055cc;">{val}</a>'
+                        '</td>'
+                    )
+                else:
+                    parts.append(f'<td style="{td_style}">{val}</td>')
+
+            # 상세보기 버튼 열
+            if detail_url:
+                parts.append(
+                    f'<td style="{td_style}text-align:center;">'
+                    f'<a href="{html.escape(detail_url)}" '
+                    'style="color:#0055cc;text-decoration:none;font-size:12px;'
+                    'background:#e8f0fe;padding:3px 9px;border-radius:3px;white-space:nowrap;">'
+                    '상세보기</a></td>'
+                )
+            else:
+                parts.append(
+                    f'<td style="{td_style}text-align:center;color:#aaa;">-</td>'
+                )
+
+            parts.append('</tr>')
+
+        parts.append('</tbody></table>')
+        parts.append('</div>')  # end section
+
+    # 푸터
+    parts += [
+        '<div style="margin-top:20px;padding-top:14px;border-top:1px solid #eee;'
+        'font-size:12px;color:#888;">',
+        f'<p style="margin:0;">총 {total}건의 신규 항목 &nbsp;·&nbsp; '
+        '첨부된 Excel 파일에서 전체 내용을 확인하세요.</p>',
+        '</div>',
+        '</div>',   # end padding
+        '</div>',   # end container
+        '</body></html>',
+    ]
+
+    return "\n".join(parts)
 
 
 def main():
@@ -169,6 +338,7 @@ def main():
             f"(신규 {total_items}건)"
         )
         body = build_email_body(all_data, now)
+        html_body = build_email_html(all_data, now)
 
         attachments_to_send = [excel_path] + all_attachment_paths
 
@@ -178,6 +348,7 @@ def main():
                 subject=subject,
                 body=body,
                 attachments=attachments_to_send,
+                html_body=html_body,
             )
             logger.info("=== 이메일 발송 완료 ===")
         except Exception as e:
