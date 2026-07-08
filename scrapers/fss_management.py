@@ -13,6 +13,8 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from utils.file_parser import extract_text
+
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.fss.or.kr"
@@ -136,14 +138,16 @@ class FssManagementScraper:
                     "관련부서": dept,
                     "상세URL": "",
                     "첨부파일명": "",
+                    "첨부파일내용": "",
                 }
 
                 detail_url = self._parse_detail_url(cols)
                 if detail_url:
                     item["상세URL"] = detail_url
-                    content, file_names, file_paths = self._get_detail(detail_url, download_dir)
+                    content, file_names, file_paths, att_text = self._get_detail(detail_url, download_dir)
                     item["제재조치요구내용"] = content
                     item["첨부파일명"] = "; ".join(file_names)
+                    item["첨부파일내용"] = att_text
                     attachments.extend(file_paths)
 
                 items.append(item)
@@ -196,7 +200,7 @@ class FssManagementScraper:
                     content = elem.get_text(separator=" ", strip=True)
                     break
 
-            file_names, file_paths = [], []
+            file_names, file_paths, file_texts = [], [], []
             for a in soup.find_all("a", href=True):
                 href = a["href"]
                 if not any(k in href for k in ["filedown", "download", "atch", "FileDown", "fileSn"]):
@@ -209,11 +213,14 @@ class FssManagementScraper:
                 if path:
                     file_names.append(fn)
                     file_paths.append(path)
+                    t = extract_text(path)
+                    if t:
+                        file_texts.append(t)
 
-            return content, file_names, file_paths
+            return content, file_names, file_paths, "\n\n---\n\n".join(file_texts)
         except Exception as e:
             logger.error(f"상세 페이지 오류 {url}: {e}")
-            return "", [], []
+            return "", [], [], ""
 
 
 def _has_next_page(soup: BeautifulSoup, current_page: int) -> bool:

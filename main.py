@@ -67,12 +67,14 @@ _SOURCE_META = {
         "source_name": "금융감독원 검사결과제재",
         "columns": ["번호", "제재대상기관", "제재조치요구일", "관련부서"],
         "url_key": "상세URL",
+        "content_key": "제재조치요구내용",
     },
     "경영유의사항": {
         "list_url": "https://www.fss.or.kr/fss/job/openInfoImpr/list.do?menuNo=200483",
         "source_name": "금융감독원 경영유의사항",
         "columns": ["일련번호", "제재대상기관", "제재조치요구일", "관련부서"],
         "url_key": "상세URL",
+        "content_key": "제재조치요구내용",
     },
     "PIPC의결결정": {
         "list_url": "https://www.pipc.go.kr/np/default/agenda.do?mCode=E030010000",
@@ -80,6 +82,7 @@ _SOURCE_META = {
         "columns": ["번호", "회의구분", "제목", "의결일"],
         "url_key": "상세URL",
         "title_key": "제목",
+        "content_key": "상세내용",
     },
     "PIPC_결과공표": {
         "list_url": "https://www.pipc.go.kr/np/cop/bbs/selectBoardList.do?bbsId=BS258&mCode=C010040000",
@@ -87,6 +90,7 @@ _SOURCE_META = {
         "columns": ["번호", "제목", "작성부서", "게시일"],
         "url_key": "상세URL",
         "title_key": "제목",
+        "content_key": "내용",
     },
     "PIPC_공시송달": {
         "list_url": "https://www.pipc.go.kr/np/cop/bbs/selectBoardList.do?bbsId=BS262&mCode=C010030000",
@@ -94,6 +98,7 @@ _SOURCE_META = {
         "columns": ["번호", "제목", "작성부서", "게시일"],
         "url_key": "상세URL",
         "title_key": "제목",
+        "content_key": "내용",
     },
 }
 
@@ -176,6 +181,7 @@ def build_email_html(all_data: dict, run_date: datetime) -> str:
         columns = meta.get("columns", list(rows[0].keys())[:4])
         url_key = meta.get("url_key", "상세URL")
         title_key = meta.get("title_key", "")
+        content_key = meta.get("content_key", "")
 
         # 섹션 헤더
         parts.append('<div style="margin-bottom:28px;">')
@@ -244,6 +250,34 @@ def build_email_html(all_data: dict, run_date: datetime) -> str:
                 )
 
             parts.append('</tr>')
+
+            # 내용 서브 행: 페이지 본문 + 첨부파일 텍스트
+            page_text = (row.get(content_key, "") or "").strip() if content_key else ""
+            att_text = (row.get("첨부파일내용", "") or "").strip()
+            if page_text or att_text:
+                num_cols = len(columns) + 1
+                sub_td = (
+                    f'padding:6px 14px 10px 14px;border:1px solid #e8e8e8;'
+                    f'border-top:none;background:#f9fafc;font-size:12px;color:#444;'
+                )
+                parts.append(f'<tr><td colspan="{num_cols}" style="{sub_td}">')
+                if page_text:
+                    snippet = html.escape(page_text[:400]) + ("…" if len(page_text) > 400 else "")
+                    parts.append(
+                        '<div style="margin-bottom:6px;">'
+                        '<span style="font-weight:bold;color:#555;font-size:11px;">페이지 내용</span><br>'
+                        f'<span style="white-space:pre-wrap;">{snippet}</span>'
+                        '</div>'
+                    )
+                if att_text:
+                    snippet = html.escape(att_text[:800]) + ("…" if len(att_text) > 800 else "")
+                    parts.append(
+                        '<div>'
+                        '<span style="font-weight:bold;color:#555;font-size:11px;">첨부파일 내용</span><br>'
+                        f'<span style="white-space:pre-wrap;">{snippet}</span>'
+                        '</div>'
+                    )
+                parts.append('</td></tr>')
 
         parts.append('</tbody></table>')
         parts.append('</div>')  # end section

@@ -16,6 +16,8 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from utils.file_parser import extract_text
+
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -147,7 +149,7 @@ class _PipcBbsScraper:
                 self.max_processed_num = max(self.max_processed_num, ntt_id)
 
                 detail_url = f"{DETAIL_URL}?bbsId={self.bbs_id}&mCode={self.m_code}&nttId={ntt_id}"
-                content, file_names, file_paths = self._get_detail(detail_url, ntt_id, download_dir)
+                content, file_names, file_paths, att_text = self._get_detail(detail_url, ntt_id, download_dir)
 
                 item = {
                     "번호": str(ntt_id),
@@ -157,6 +159,7 @@ class _PipcBbsScraper:
                     "내용": content,
                     "상세URL": detail_url,
                     "첨부파일명": "; ".join(file_names),
+                    "첨부파일내용": att_text,
                 }
                 items.append(item)
                 attachments.extend(file_paths)
@@ -202,6 +205,7 @@ class _PipcBbsScraper:
 
             # 파일명 목록 추출 (.download 영역)
             file_divs = soup.select(".download, .file_list li, .atch_file li")
+            file_texts = []
             for i, div in enumerate(file_divs):
                 fn = div.get_text(strip=True)
                 fn = re.sub(r"다운로드|첨부파일.*", "", fn).strip()
@@ -220,11 +224,14 @@ class _PipcBbsScraper:
                     if path:
                         file_names.append(fn)
                         file_paths.append(path)
+                        t = extract_text(path)
+                        if t:
+                            file_texts.append(t)
 
-            return content, file_names, file_paths
+            return content, file_names, file_paths, "\n\n---\n\n".join(file_texts)
         except Exception as e:
             logger.error(f"  [{self.name}] 상세 오류 {url}: {e}")
-            return "", [], []
+            return "", [], [], ""
 
 
 class PipcResultScraper(_PipcBbsScraper):
