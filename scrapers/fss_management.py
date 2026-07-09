@@ -189,7 +189,31 @@ class FssManagementScraper:
     def _get_detail(self, url: str, download_dir: str):
         try:
             time.sleep(0.5)
-            resp = self.session.get(url, timeout=30)
+            resp = self.session.get(url, timeout=60)
+            resp.raise_for_status()
+
+            content_type = resp.headers.get("Content-Type", "").lower()
+
+            # 직접 파일 다운로드 URL인 경우 (HTML 아님)
+            if "html" not in content_type:
+                cd = resp.headers.get("Content-Disposition", "")
+                filename = ""
+                if cd:
+                    m = re.findall(r"filename\*?=(?:UTF-8'')?([^\s;]+)", cd, re.IGNORECASE)
+                    if m:
+                        filename = urllib.parse.unquote(m[-1].strip("\"'"))
+                if not filename:
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+                    filename = urllib.parse.unquote(qs.get("file", [""])[0]) or "file"
+                safe = re.sub(r'[\\/:*?"<>|]', "_", filename).strip() or f"file_{abs(hash(url)) % 100000}"
+                path = os.path.join(download_dir, f"{self.sheet_name}_{safe}")
+                with open(path, "wb") as f:
+                    f.write(resp.content)
+                logger.info(f"    직접 다운로드: {safe}")
+                t = extract_text(path)
+                return "", [filename], [path], t or ""
+
+            # HTML 상세 페이지
             resp.encoding = "utf-8"
             soup = BeautifulSoup(resp.text, "lxml")
 
@@ -203,7 +227,7 @@ class FssManagementScraper:
             file_names, file_paths, file_texts = [], [], []
             for a in soup.find_all("a", href=True):
                 href = a["href"]
-                if not any(k in href for k in ["filedown", "download", "atch", "FileDown", "fileSn"]):
+                if not any(k in href for k in ["filedown", "download", "atch", "FileDown", "fileSn", "hpdownload"]):
                     continue
                 fn = a.get_text(strip=True)
                 if not fn:
