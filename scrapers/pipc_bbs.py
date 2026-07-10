@@ -51,9 +51,9 @@ def _make_session() -> requests.Session:
     session.headers.update(HEADERS)
     session.verify = False
     adapter = _TLSAdapter(max_retries=Retry(
-        total=4,
-        connect=4,
-        backoff_factor=2,
+        total=1,
+        connect=1,
+        backoff_factor=1,
         status_forcelist=[500, 502, 503, 504],
         raise_on_status=False,
     ))
@@ -96,7 +96,7 @@ class _PipcBbsScraper:
             logger.info(f"  [{self.name}] 페이지 {page} 조회 중...")
             params = {"bbsId": self.bbs_id, "mCode": self.m_code, "pageIndex": page}
             try:
-                resp = self.session.get(LIST_URL, params=params, timeout=(30, 60))
+                resp = self.session.get(LIST_URL, params=params, timeout=(5, 30))
                 resp.raise_for_status()
                 resp.encoding = "utf-8"
             except Exception as e:
@@ -178,7 +178,7 @@ class _PipcBbsScraper:
     def _get_detail(self, url: str, ntt_id: int, download_dir: str):
         try:
             time.sleep(0.3)
-            resp = self.session.get(url, timeout=(30, 60))
+            resp = self.session.get(url, timeout=(5, 30))
             resp.encoding = "utf-8"
             soup = BeautifulSoup(resp.text, "lxml")
 

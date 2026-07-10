@@ -60,9 +60,9 @@ def _make_session(verify_ssl: bool = True) -> requests.Session:
     session.verify = verify_ssl
 
     retry = Retry(
-        total=4,
-        connect=4,
-        backoff_factor=2,
+        total=1,
+        connect=1,
+        backoff_factor=1,
         status_forcelist=[500, 502, 503, 504],
         raise_on_status=False,
     )
@@ -126,7 +126,7 @@ class PipcAgendaScraper:
 
             params = {"mCode": M_CODE, "pageIndex": page}
             try:
-                resp = self._request("GET", LIST_URL, params=params, timeout=(30, 60))
+                resp = self._request("GET", LIST_URL, params=params, timeout=(5, 30))
                 resp.raise_for_status()
                 resp.encoding = "utf-8"
             except Exception as e:
@@ -242,7 +242,7 @@ class PipcAgendaScraper:
     def _get_detail(self, url: str, download_dir: str):
         try:
             time.sleep(0.5)
-            resp = self._request("GET", url, timeout=(30, 60))
+            resp = self._request("GET", url, timeout=(5, 30))
             resp.encoding = "utf-8"
             soup = BeautifulSoup(resp.text, "lxml")
 
