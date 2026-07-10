@@ -224,13 +224,18 @@ class FssManagementScraper:
                     content = elem.get_text(separator=" ", strip=True)
                     break
 
+            _DOWNLOAD_KW = frozenset(["filedown", "download", "atch", "filesn", "hpdownload"])
+            _FILE_EXTS = (".pdf", ".hwp", ".hwpx", ".docx", ".xlsx", ".xls", ".ppt", ".pptx", ".zip")
+
             file_names, file_paths, file_texts = [], [], []
             for a in soup.find_all("a", href=True):
                 href = a["href"]
-                if not any(k in href for k in ["filedown", "download", "atch", "FileDown", "fileSn", "hpdownload"]):
-                    continue
                 fn = a.get_text(strip=True)
                 if not fn:
+                    continue
+                href_lower = href.lower()
+                fn_lower = fn.lower()
+                if not (any(k in href_lower for k in _DOWNLOAD_KW) or fn_lower.endswith(_FILE_EXTS)):
                     continue
                 file_url = (BASE_URL + href) if href.startswith("/") else href
                 path = _download_file(self.session, file_url, fn, download_dir, self.sheet_name)
