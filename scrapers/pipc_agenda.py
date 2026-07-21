@@ -308,7 +308,7 @@ class PipcAgendaScraper:
                 seen_files.add(key)
                 fn = fn_map.get(key, f"file_{sn}.{ext}")
                 dl_url = f"{BASE_URL}/np/cmm/fms/FileDown.do?atchFileId={atch_id}&fileSn={sn}&fileExtsn={ext}"
-                path = _download_file(self.session, dl_url, fn, download_dir, self.sheet_name)
+                path = _download_file(self.session, dl_url, fn, download_dir, self.sheet_name, referer=url)
                 if path:
                     file_names.append(fn)
                     file_paths.append(path)
@@ -332,12 +332,22 @@ def _has_next_page(soup: BeautifulSoup, current_page: int) -> bool:
     return False
 
 
-def _download_file(session: requests.Session, url: str, filename: str, download_dir: str, prefix: str) -> str:
+def _download_file(session: requests.Session, url: str, filename: str, download_dir: str, prefix: str, referer: str = "") -> str:
     try:
-        resp = session.get(url, timeout=60, stream=True, verify=False)
+        headers = {}
+        if referer:
+            headers["Referer"] = referer
+
+        resp = session.get(url, timeout=60, stream=True, verify=False, headers=headers)
         resp.raise_for_status()
 
+        # HTML 응답이면 실제 파일이 아님 (로그인 리다이렉트 등)
+        ct = resp.headers.get("Content-Type", "")
         cd = resp.headers.get("Content-Disposition", "")
+        if not cd and ct.startswith("text/html"):
+            logger.error(f"파일 다운로드 실패 (HTML 응답 반환됨) {url}")
+            return ""
+
         if cd:
             m = re.findall(r"filename\*?=(?:UTF-8'')?([^\s;]+)", cd, re.IGNORECASE)
             if m:
