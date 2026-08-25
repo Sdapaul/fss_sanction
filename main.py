@@ -324,9 +324,13 @@ def main():
         # 각 사이트 스크래핑
         for scraper in scrapers:
             last_num = state.get(scraper.name, 0)
+            kwargs = {"since_date": since_date, "download_dir": tmpdir, "last_num": last_num}
+            if getattr(scraper, "uses_id_tracking", False):
+                # "번호"가 밀릴 수 있는 사이트는 안정 ID 집합으로 신규 여부를 판단
+                kwargs["seen_ids"] = set(state.get(scraper.name + "_ids", []))
             try:
                 logger.info(f"[{scraper.name}] 스크래핑 시작... (last_num={last_num})")
-                items, attachments = scraper.scrape(since_date=since_date, download_dir=tmpdir, last_num=last_num)
+                items, attachments = scraper.scrape(**kwargs)
                 all_data[scraper.sheet_name] = items
                 all_attachment_paths.extend(attachments)
                 logger.info(f"[{scraper.name}] 완료: {len(items)}건, 첨부 {len(attachments)}개")
@@ -337,9 +341,21 @@ def main():
         total_items = sum(len(v) for v in all_data.values())
         logger.info(f"전체 신규 항목: {total_items}건")
 
-        # 다음 실행의 last_num 기준값 (아직 디스크에 쓰지 않음)
+        # 다음 실행 기준값 (아직 디스크에 쓰지 않음)
         new_state = dict(state)
         for scraper in scrapers:
+            if getattr(scraper, "uses_id_tracking", False):
+                # seen_ids 집합에 이번 실행에서 처리한 안정 ID를 누적
+                ids_key = scraper.name + "_ids"
+                prev_ids = set(state.get(ids_key, []))
+                new_state[ids_key] = sorted(prev_ids | getattr(scraper, "processed_ids", set()))
+                rows = all_data.get(scraper.sheet_name, [])
+                if rows:
+                    num_key = "번호" if "번호" in rows[0] else "일련번호"
+                    nums = [int(r[num_key]) for r in rows if str(r.get(num_key, "")).isdigit()]
+                    if nums:
+                        new_state[scraper.name] = max(nums)
+                continue
             # 비제재 포함 처리된 최대 번호가 있으면 우선 사용 (PIPC)
             if getattr(scraper, "max_processed_num", 0) > 0:
                 new_state[scraper.name] = scraper.max_processed_num

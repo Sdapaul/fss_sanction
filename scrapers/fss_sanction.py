@@ -58,11 +58,18 @@ def _select_rows(soup: BeautifulSoup) -> list:
 class FssSanctionScraper:
     name = "FSS_검사결과제재"
     sheet_name = "검사결과제재"
+    uses_id_tracking = True  # 번호가 밀릴 수 있어 seen_ids 기반 추적 사용
 
     def __init__(self):
         self.session = _make_session()
+        self.processed_ids = set()  # 이번 실행에서 신규로 처리한 안정 ID (examMgmtNo_emOpenSeq)
 
-    def scrape(self, since_date: datetime, download_dir: str, last_num: int = 0):
+    def scrape(self, since_date: datetime, download_dir: str, last_num: int = 0, seen_ids: set = None):
+        # 주의: FSS 목록의 "번호"는 제재조치요구일 순으로 재정렬되는 표시 순번일 뿐,
+        # 고정된 영구 ID가 아니다 — 뒤늦게 공시된 항목이 끼어들면 이미 보낸 항목의
+        # 번호가 밀려 올라간다 (예: 실제 관측 사례 241 → 243). 그래서 번호 비교 대신
+        # 상세URL의 examMgmtNo/emOpenSeq로 만든 안정 ID로 "이미 보냈는지"를 판단한다.
+        seen_ids = set(seen_ids or ())
         items = []
         attachments = []
 
@@ -73,7 +80,6 @@ class FssSanctionScraper:
         except Exception:
             pass
 
-        since_str = since_date.strftime("%Y%m%d")
         year_start = f"{since_date.year}-01-01"
         today_str = datetime.now().strftime("%Y-%m-%d")
 
@@ -105,7 +111,6 @@ class FssSanctionScraper:
                 logger.warning(f"  [{self.name}] 행 없음 (페이지 {page}). 응답 미리보기:\n{resp.text[:800]}")
                 break
 
-            found_old = False
             total_on_page = 0
             for row in rows:
                 cols = row.find_all("td")
@@ -122,16 +127,11 @@ class FssSanctionScraper:
                 dept = cols[4].get_text(strip=True) if len(cols) > 4 else ""
                 views = cols[5].get_text(strip=True) if len(cols) > 5 else ""
 
-                # 번호 기반 추적 (last_num > 0이면 우선 사용)
-                if last_num > 0:
-                    if int(num) <= last_num:
-                        found_old = True
-                        continue
-                else:
-                    date_clean = re.sub(r"\D", "", date_str)
-                    if len(date_clean) == 8 and date_clean < since_str:
-                        found_old = True
-                        continue
+                detail_url = self._parse_detail_url(cols)
+                stable_id = _stable_id(detail_url) or f"num:{num}"
+
+                if stable_id in seen_ids:
+                    continue
 
                 item = {
                     "번호": num,
@@ -145,7 +145,6 @@ class FssSanctionScraper:
                     "첨부파일내용": "",
                 }
 
-                detail_url = self._parse_detail_url(cols)
                 if detail_url:
                     item["상세URL"] = detail_url
                     content, file_names, file_paths, att_text = self._get_detail(detail_url, download_dir)
@@ -155,6 +154,7 @@ class FssSanctionScraper:
                     attachments.extend(file_paths)
 
                 items.append(item)
+                self.processed_ids.add(stable_id)
                 time.sleep(0.5)
 
             logger.info(
@@ -165,8 +165,8 @@ class FssSanctionScraper:
                     f"  [{self.name}] 1페이지 파싱 가능 행 없음 — "
                     f"POST 파라미터 또는 HTML 구조 확인 필요.\n  응답 미리보기:\n{resp.text[:1500]}"
                 )
-            if found_old:
-                break
+            # 번호가 아니라 ID로 신규 여부를 가리므로, 검색 기간(연초~오늘) 전체를
+            # 끝까지 스캔한다 — 뒤늦게 끼어든 과거 항목도 놓치지 않기 위함.
             if not _has_next_page(soup, page):
                 break
             page += 1
@@ -227,12 +227,29 @@ class FssSanctionScraper:
             return "", [], [], ""
 
 
+def _stable_id(detail_url: str) -> str:
+    """상세URL의 examMgmtNo(+emOpenSeq)로 만든 안정 ID. 표시 "번호"와 달리 밀리지 않는다."""
+    if not detail_url:
+        return ""
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(detail_url).query)
+    exam_no = qs.get("examMgmtNo", [""])[0]
+    if not exam_no:
+        return ""
+    seq = qs.get("emOpenSeq", [""])[0]
+    return f"{exam_no}_{seq}"
+
+
 def _has_next_page(soup: BeautifulSoup, current_page: int) -> bool:
     for a in soup.select(".paging a, .pagination a, .paginate a, #paging a"):
+        # data-pageindex가 가장 신뢰도 높음 — "다음/마지막" 링크는 내부에 중첩된
+        # <span>이 있어 get_text()가 "다음목록"처럼 붙어버려 텍스트 매칭이 깨진다.
+        idx = a.get("data-pageindex", "")
+        if idx.isdigit() and int(idx) > current_page:
+            return True
         text = a.get_text(strip=True)
         if text.isdigit() and int(text) > current_page:
             return True
-        if text in ("다음", "next", ">", "▶", "»", "다음페이지"):
+        if "다음" in text or text in ("next", ">", "▶", "»"):
             return True
     return False
 

@@ -58,11 +58,16 @@ def _select_rows(soup: BeautifulSoup) -> list:
 class FssManagementScraper:
     name = "FSS_경영유의사항"
     sheet_name = "경영유의사항"
+    uses_id_tracking = True  # 번호가 밀릴 수 있어 seen_ids 기반 추적 사용
 
     def __init__(self):
         self.session = _make_session()
+        self.processed_ids = set()  # 이번 실행에서 신규로 처리한 안정 ID (examMgmtNo_seq)
 
-    def scrape(self, since_date: datetime, download_dir: str, last_num: int = 0):
+    def scrape(self, since_date: datetime, download_dir: str, last_num: int = 0, seen_ids: set = None):
+        # fss_sanction.py와 동일한 이유로 "번호" 대신 첨부파일명의 examMgmtNo_seq
+        # 접두어로 만든 안정 ID로 신규 여부를 판단한다 (번호는 표시 순번일 뿐 밀릴 수 있음).
+        seen_ids = set(seen_ids or ())
         items = []
         attachments = []
 
@@ -72,7 +77,6 @@ class FssManagementScraper:
         except Exception:
             pass
 
-        since_str = since_date.strftime("%Y%m%d")
         year_start = f"{since_date.year}-01-01"
         today_str = datetime.now().strftime("%Y-%m-%d")
 
@@ -103,7 +107,6 @@ class FssManagementScraper:
                 logger.warning(f"  [{self.name}] 행 없음 (페이지 {page}). 응답 미리보기:\n{resp.text[:800]}")
                 break
 
-            found_old = False
             total_on_page = 0
             for row in rows:
                 cols = row.find_all("td")
@@ -119,16 +122,11 @@ class FssManagementScraper:
                 date_str = cols[2].get_text(strip=True)
                 dept = cols[4].get_text(strip=True) if len(cols) > 4 else ""
 
-                # 번호 기반 추적 (last_num > 0이면 우선 사용)
-                if last_num > 0:
-                    if int(num) <= last_num:
-                        found_old = True
-                        continue
-                else:
-                    date_clean = re.sub(r"\D", "", date_str)
-                    if len(date_clean) == 8 and date_clean < since_str:
-                        found_old = True
-                        continue
+                detail_url = self._parse_detail_url(cols)
+                stable_id = _stable_id(detail_url) or f"num:{num}"
+
+                if stable_id in seen_ids:
+                    continue
 
                 item = {
                     "일련번호": num,
@@ -141,7 +139,6 @@ class FssManagementScraper:
                     "첨부파일내용": "",
                 }
 
-                detail_url = self._parse_detail_url(cols)
                 if detail_url:
                     item["상세URL"] = detail_url
                     content, file_names, file_paths, att_text = self._get_detail(detail_url, download_dir)
@@ -151,6 +148,7 @@ class FssManagementScraper:
                     attachments.extend(file_paths)
 
                 items.append(item)
+                self.processed_ids.add(stable_id)
                 time.sleep(0.5)
 
             logger.info(
@@ -161,8 +159,6 @@ class FssManagementScraper:
                     f"  [{self.name}] 1페이지 파싱 가능 행 없음 — "
                     f"POST 파라미터 또는 HTML 구조 확인 필요.\n  응답 미리보기:\n{resp.text[:1500]}"
                 )
-            if found_old:
-                break
             if not _has_next_page(soup, page):
                 break
             page += 1
@@ -252,12 +248,29 @@ class FssManagementScraper:
             return "", [], [], ""
 
 
+def _stable_id(detail_url: str) -> str:
+    """상세URL(첨부 다운로드 링크)의 file= 파라미터 앞자리 examMgmtNo_seq로 만든 안정 ID."""
+    if not detail_url:
+        return ""
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(detail_url).query)
+    filename = urllib.parse.unquote(qs.get("file", [""])[0])
+    m = re.match(r"(\d+)_(\d+)_", filename)
+    if not m:
+        return ""
+    return f"{m.group(1)}_{m.group(2)}"
+
+
 def _has_next_page(soup: BeautifulSoup, current_page: int) -> bool:
     for a in soup.select(".paging a, .pagination a, .paginate a, #paging a"):
+        # data-pageindex가 가장 신뢰도 높음 — "다음/마지막" 링크는 내부에 중첩된
+        # <span>이 있어 get_text()가 "다음목록"처럼 붙어버려 텍스트 매칭이 깨진다.
+        idx = a.get("data-pageindex", "")
+        if idx.isdigit() and int(idx) > current_page:
+            return True
         text = a.get_text(strip=True)
         if text.isdigit() and int(text) > current_page:
             return True
-        if text in ("다음", "next", ">", "▶", "»", "다음페이지"):
+        if "다음" in text or text in ("next", ">", "▶", "»"):
             return True
     return False
 
