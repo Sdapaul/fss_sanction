@@ -16,6 +16,7 @@ import html
 import json
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime, timedelta
 
@@ -336,7 +337,7 @@ def main():
         total_items = sum(len(v) for v in all_data.values())
         logger.info(f"전체 신규 항목: {total_items}건")
 
-        # 수집된 항목으로 state 업데이트 (이메일 발송 여부와 무관하게 저장)
+        # 다음 실행의 last_num 기준값 (아직 디스크에 쓰지 않음)
         new_state = dict(state)
         for scraper in scrapers:
             # 비제재 포함 처리된 최대 번호가 있으면 우선 사용 (PIPC)
@@ -349,10 +350,11 @@ def main():
                 nums = [int(r[num_key]) for r in rows if str(r.get(num_key, "")).isdigit()]
                 if nums:
                     new_state[scraper.name] = max(nums)
-        save_state(new_state)
-        logger.info(f"수집 상태 저장: {new_state}")
 
         if total_items == 0:
+            # 신규 항목이 없으니 이번 실행에서 놓칠 것도 없음 — 바로 저장
+            save_state(new_state)
+            logger.info(f"수집 상태 저장: {new_state}")
             logger.info("신규 제재 내역이 없습니다. 이메일 발송을 건너뜁니다.")
             return
 
@@ -360,11 +362,11 @@ def main():
         excel_path = os.path.join(tmpdir, excel_filename)
         write_to_excel(all_data, excel_path)
 
-        # 수신자 목록
+        # 수신자 목록 (쉼표/세미콜론 구분 모두 허용)
         recipients_raw = os.environ.get("RECIPIENT_EMAILS", "")
-        recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
+        recipients = [r.strip() for r in re.split(r"[,;]", recipients_raw) if r.strip()]
         if not recipients:
-            logger.error("RECIPIENT_EMAILS 환경변수가 설정되지 않았습니다.")
+            logger.error("RECIPIENT_EMAILS 환경변수가 설정되지 않았습니다. state는 저장하지 않고 다음 실행에서 재시도합니다.")
             return
 
         subject = (
@@ -386,8 +388,15 @@ def main():
             )
             logger.info("=== 이메일 발송 완료 ===")
         except Exception as e:
+            # 발송 실패 시 state를 절대 전진시키지 않음 — 그래야 다음 실행이 같은 항목을
+            # 신규로 다시 집어서 재발송을 시도한다 (여기서 저장하면 항목이 영구 누락됨).
             logger.error(f"이메일 발송 실패: {e}", exc_info=True)
+            logger.error("state.json을 저장하지 않습니다 — 다음 실행에서 동일 항목을 재시도합니다.")
             raise
+
+        # 발송 성공했을 때만 state 전진
+        save_state(new_state)
+        logger.info(f"수집 상태 저장: {new_state}")
 
 
 if __name__ == "__main__":

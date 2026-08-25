@@ -46,9 +46,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add state.json
-          git diff --staged --quiet || git commit -m "chore: update scrape state [skip ci]"
-          git pull --rebase origin main
-          git push
+          git diff --staged --quiet && exit 0
+          git commit -m "chore: update scrape state [skip ci]"
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main && git push && exit 0
+            echo "push 실패, 재시도 $i/5"
+            sleep 5
+          done
+          echo "::error::state.json push가 5회 재시도 후에도 실패했습니다 — 다음 실행이 중복 발송할 수 있습니다."
+          exit 1
 
       - name: 실행 결과 업로드 (디버깅용)
         if: failure()
