@@ -92,16 +92,23 @@ def _select_rows(soup: BeautifulSoup) -> list:
 
 SANCTION_KEYWORDS = ["위반행위", "시정조치", "과징금", "과태료", "시정명령", "처분"]
 
+# 페이지 순회 중단 버퍼: last_num 바로 아래에서 끊지 않고 여유를 두어, 지연 게시로
+# 번호가 밀린 항목도 놓치지 않는다 (실제 관측: idxId=2026-0638 항목이 2026-08-28엔
+# 번호 2723, 2026-08-31엔 2724로 밀림 — 아래 클래스 docstring 참고).
+NUM_BUFFER = 50
+
 
 class PipcAgendaScraper:
     name = "PIPC_의결결정"
     sheet_name = "PIPC의결결정"
+    uses_id_tracking = True  # 번호가 밀릴 수 있어 idxId 기반 안정 ID로 중복 발송 방지
 
     def __init__(self):
         # SSL 검증 활성화로 먼저 시도, 실패 시 비활성화
         self.session = _make_session(verify_ssl=True)
         self._ssl_fallback = False
-        self.max_processed_num = 0  # 비제재 포함 처리된 최대 번호
+        self.processed_ids = set()  # 이번 실행에서 신규로 처리한 안정 ID (idxId)
+        self.max_processed_num = 0  # 비제재 포함 스캔한 최대 번호 (페이지 중단 기준용)
 
     def _request(self, method: str, url: str, **kwargs):
         """SSL 오류 시 verify=False 로 자동 재시도."""
@@ -114,12 +121,22 @@ class PipcAgendaScraper:
                 self.session = _make_session(verify_ssl=False)
             return self.session.request(method, url, **kwargs)
 
-    def scrape(self, since_date: datetime, download_dir: str, last_num: int = 0):
+    def scrape(self, since_date: datetime, download_dir: str, last_num: int = 0, seen_ids: set = None):
+        # 주의: PIPC 의결·결정 목록의 "번호"는 등록순으로 재정렬되는 표시 순번일 뿐,
+        # 고정된 영구 ID가 아니다 — 지연 게시된 옛 안건이 끼어들면 이미 보낸 항목의
+        # 번호가 밀려 올라간다 (실제 관측 사례: idxId=2026-0638 항목이 2026-08-28엔
+        # 번호 2723, 2026-08-31엔 번호 2724로 동일 내용이 재발송됨). 게다가 "의결일"은
+        # 실제 게시 시점보다 수 주 뒤처지는 경우가 흔해(같은 회의 안건이 몇 주에 걸쳐
+        # 나눠서 게시됨) 의결일 기준으로 페이지 순회를 끊으면 신규 항목을 통째로
+        # 놓친다. 그래서 (1) 페이지 순회 중단은 last_num에 버퍼를 둔 번호 기준으로
+        # 하고, (2) 실제 "이미 보냈는지" 판단은 상세URL의 idxId로 만든 안정 ID로 한다.
+        seen_ids = set(seen_ids or ())
         items = []
         attachments = []
         since_str = since_date.strftime("%Y-%m-%d")
+        cutoff_num = (last_num - NUM_BUFFER) if last_num > 0 else None
         page = 1
-        seen_nums = set()
+        seen_in_run = set()
 
         while True:
             logger.info(f"  [{self.name}] 페이지 {page} 조회 중...")
@@ -151,10 +168,6 @@ class PipcAgendaScraper:
                 if not num.isdigit():
                     continue
 
-                # 중복 항목 방지
-                if num in seen_nums:
-                    continue
-                seen_nums.add(num)
                 total_on_page += 1
 
                 meeting_type = cols[1].get_text(strip=True)
@@ -163,9 +176,9 @@ class PipcAgendaScraper:
                 date_str = cols[3].get_text(strip=True)   # YYYY-MM-DD
                 views = cols[5].get_text(strip=True) if len(cols) > 5 else ""
 
-                # 번호 기반 추적 (last_num > 0이면 우선 사용)
-                if last_num > 0:
-                    if int(num) <= last_num:
+                # 페이지 순회 중단 기준: last_num 확보 시 버퍼를 둔 번호, 없으면(첫 실행) 날짜
+                if cutoff_num is not None:
+                    if int(num) <= cutoff_num:
                         found_old = True
                         continue
                 else:
@@ -173,8 +186,18 @@ class PipcAgendaScraper:
                         found_old = True
                         continue
 
-                # 처리된 최대 번호 갱신 (비제재 포함)
+                # 처리된 최대 번호 갱신 (비제재 포함) — 다음 실행의 cutoff_num 기준
                 self.max_processed_num = max(self.max_processed_num, int(num))
+
+                detail_url = self._parse_detail_url(title_col, cols)
+                stable_id = _stable_id(detail_url) or f"num:{num}"
+
+                # 중복 항목 방지 (페이지 내 중복 행 + 이미 발송한 안정 ID)
+                if stable_id in seen_in_run:
+                    continue
+                seen_in_run.add(stable_id)
+                if stable_id in seen_ids:
+                    continue
 
                 # 제재 관련 항목만 수집 (침해요인 평가·정보제공 요청 등 비제재 제외)
                 if not any(kw in title for kw in SANCTION_KEYWORDS):
@@ -193,7 +216,6 @@ class PipcAgendaScraper:
                     "첨부파일내용": "",
                 }
 
-                detail_url = self._parse_detail_url(title_col, cols)
                 if detail_url:
                     item["상세URL"] = detail_url
                     content, file_names, file_paths, att_text = self._get_detail(detail_url, download_dir)
@@ -203,6 +225,7 @@ class PipcAgendaScraper:
                     attachments.extend(file_paths)
 
                 items.append(item)
+                self.processed_ids.add(stable_id)
                 time.sleep(0.5)
 
             logger.info(
@@ -320,6 +343,15 @@ class PipcAgendaScraper:
         except Exception as e:
             logger.error(f"상세 페이지 오류 {url}: {e}")
             return "", [], [], ""
+
+
+def _stable_id(detail_url: str) -> str:
+    """상세URL의 idxId로 만든 안정 ID. 표시 "번호"와 달리 밀리지 않는다."""
+    if not detail_url:
+        return ""
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(detail_url).query)
+    idx_id = qs.get("idxId", [""])[0]
+    return f"idx:{idx_id}" if idx_id else ""
 
 
 def _has_next_page(soup: BeautifulSoup, current_page: int) -> bool:

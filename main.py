@@ -349,12 +349,17 @@ def main():
                 ids_key = scraper.name + "_ids"
                 prev_ids = set(state.get(ids_key, []))
                 new_state[ids_key] = sorted(prev_ids | getattr(scraper, "processed_ids", set()))
-                rows = all_data.get(scraper.sheet_name, [])
-                if rows:
-                    num_key = "번호" if "번호" in rows[0] else "일련번호"
-                    nums = [int(r[num_key]) for r in rows if str(r.get(num_key, "")).isdigit()]
-                    if nums:
-                        new_state[scraper.name] = max(nums)
+                # 비제재 포함 스캔한 최대 번호가 있으면 우선 사용 (PIPC — 페이지 순회
+                # 중단 버퍼(cutoff_num) 기준값이 신규 발송 항목 유무와 무관하게 전진해야 함)
+                if getattr(scraper, "max_processed_num", 0) > 0:
+                    new_state[scraper.name] = scraper.max_processed_num
+                else:
+                    rows = all_data.get(scraper.sheet_name, [])
+                    if rows:
+                        num_key = "번호" if "번호" in rows[0] else "일련번호"
+                        nums = [int(r[num_key]) for r in rows if str(r.get(num_key, "")).isdigit()]
+                        if nums:
+                            new_state[scraper.name] = max(nums)
                 continue
             # 비제재 포함 처리된 최대 번호가 있으면 우선 사용 (PIPC)
             if getattr(scraper, "max_processed_num", 0) > 0:
