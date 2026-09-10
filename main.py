@@ -20,6 +20,7 @@ import re
 import tempfile
 from datetime import datetime, timedelta
 
+import holidays
 import pytz
 from dotenv import load_dotenv
 
@@ -59,6 +60,14 @@ def save_state(state: dict):
             json.dump(state, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"state.json 저장 실패: {e}")
+
+
+def is_kr_business_day(date: datetime) -> bool:
+    """주말(토/일) 또는 대한민국 공휴일이면 False. 스크래핑 대상 사이트가
+    영업일에만 자료를 게시하므로, 해당 일에는 스크래핑/발송을 건너뛴다."""
+    if date.weekday() >= 5:  # 5=토, 6=일
+        return False
+    return date.date() not in holidays.KR(years=date.year)
 
 
 # 소스별 메타 정보: 목록 URL · 컬럼 정의 · 링크 키
@@ -300,6 +309,14 @@ def build_email_html(all_data: dict, run_date: datetime) -> str:
 
 def main():
     now = datetime.now(KST)
+
+    if not is_kr_business_day(now):
+        logger.info(
+            f"{now.strftime('%Y-%m-%d')}({now.strftime('%A')})은 주말 또는 대한민국 공휴일입니다 — "
+            "스크래핑 및 이메일 발송을 건너뜁니다."
+        )
+        return
+
     lookback_days = int(os.environ.get("LOOKBACK_DAYS", "1"))
     since_date = now - timedelta(days=lookback_days)
 
