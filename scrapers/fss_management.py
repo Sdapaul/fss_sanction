@@ -195,9 +195,15 @@ class FssManagementScraper:
                 cd = resp.headers.get("Content-Disposition", "")
                 filename = ""
                 if cd:
-                    m = re.findall(r"filename\*?=(?:UTF-8'')?([^\s;]+)", cd, re.IGNORECASE)
+                    m = re.search(r'filename\*?=(?:UTF-8\'\')?"([^"]+)"', cd, re.IGNORECASE)
+                    if not m:
+                        m = re.search(r"filename\*?=(?:UTF-8'')?([^\s;]+)", cd, re.IGNORECASE)
                     if m:
-                        filename = urllib.parse.unquote(m[-1].strip("\"'"))
+                        filename = urllib.parse.unquote(m.group(1).strip("\"'"))
+                        try:
+                            filename = filename.encode("latin-1").decode("utf-8")
+                        except (UnicodeDecodeError, UnicodeEncodeError):
+                            pass
                 if not filename:
                     qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
                     filename = urllib.parse.unquote(qs.get("file", [""])[0]) or "file"
@@ -232,6 +238,10 @@ class FssManagementScraper:
                 href_lower = href.lower()
                 fn_lower = fn.lower()
                 if not (any(k in href_lower for k in _DOWNLOAD_KW) or fn_lower.endswith(_FILE_EXTS)):
+                    continue
+                # "문서뷰어" 미리보기 링크 제외 — 빈 응답(Content-Length: 0)만 반환하는 뷰어 페이지라
+                # href에 다운로드 키워드가 우연히 섞여 있어도 실제 첨부 대상이 아님
+                if "pdfviewr" in href_lower or "viewtype=" in href_lower:
                     continue
                 file_url = (BASE_URL + href) if href.startswith("/") else href
                 path = _download_file(self.session, file_url, fn, download_dir, self.sheet_name)
@@ -282,9 +292,15 @@ def _download_file(session: requests.Session, url: str, filename: str, download_
 
         cd = resp.headers.get("Content-Disposition", "")
         if cd:
-            m = re.findall(r"filename\*?=(?:UTF-8'')?([^\s;]+)", cd, re.IGNORECASE)
+            m = re.search(r'filename\*?=(?:UTF-8\'\')?"([^"]+)"', cd, re.IGNORECASE)
+            if not m:
+                m = re.search(r"filename\*?=(?:UTF-8'')?([^\s;]+)", cd, re.IGNORECASE)
             if m:
-                filename = urllib.parse.unquote(m[-1].strip("\"'"))
+                filename = urllib.parse.unquote(m.group(1).strip("\"'"))
+                try:
+                    filename = filename.encode("latin-1").decode("utf-8")
+                except (UnicodeDecodeError, UnicodeEncodeError):
+                    pass
 
         safe = re.sub(r'[\\/:*?"<>|]', "_", filename).strip() or f"file_{abs(hash(url)) % 100000}"
         path = os.path.join(download_dir, f"{prefix}_{safe}")

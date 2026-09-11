@@ -191,42 +191,39 @@ class _PipcBbsScraper:
                     tag.decompose()
                 content = view.get_text(separator=" ", strip=True)[:1000]
 
-            # 첨부파일: atchFileId + fileSn 패턴
-            file_names, file_paths = [], []
-            src = resp.text
+            # 첨부파일: 각 ".download" 블록 안 다운로드 버튼의 onclick(fn_egov_downFile(...))에서
+            # atchFileId/fileSn/fileExtsn을 직접 추출한다.
+            # (과거에는 atchFileId를 "페이지 전체에서 처음 찾은 값 하나"로 모든 첨부에 재사용했는데,
+            #  1) 폼 템플릿의 빈 hidden input이 실제 값보다 먼저 나와 못 찾거나,
+            #  2) 못 찾으면 정규식이 페이지 하단 유관기관 배너 아이콘의 atchFileId=FILE_xxx 쿼리스트링을
+            #     잡아버려 — 완전히 무관한 이미지 파일을 "첨부파일"로 받아 보내는 버그가 있었다.
+            #  fileSn도 실제 서버 값이 아니라 목록 순번을 그대로 썼던 것도 함께 버그였음.)
+            file_names, file_paths, file_texts = [], [], []
+            for div in soup.select(".download"):
+                btn = div.find("a", onclick=True)
+                if not btn:
+                    continue
+                m = re.search(
+                    r"fn_egov_downFile\w*\('([^']+)',\s*'?(\d+)'?,\s*'([^']+)'\)",
+                    btn.get("onclick", ""),
+                )
+                if not m:
+                    continue
+                atch_id, sn, ext = m.group(1), m.group(2), m.group(3)
 
-            # HTML에서 atchFileId 추출
-            atch_ids = re.findall(r'atchFileId["\s]*[=:]["\s]*(FILE_\w+)', src)
-            if not atch_ids:
-                # hidden input에서 추출
-                inp = soup.find("input", {"name": "atchFileId"})
-                if inp and inp.get("value"):
-                    atch_ids = [inp["value"]]
-
-            # 파일명 목록 추출 (.download 영역)
-            file_divs = soup.select(".download, .file_list li, .atch_file li")
-            file_texts = []
-            for i, div in enumerate(file_divs):
-                fn = div.get_text(strip=True)
+                fn = btn.get("alt") or div.get_text(strip=True)
                 fn = re.sub(r"다운로드|첨부파일.*", "", fn).strip()
                 if not fn or len(fn) < 3:
-                    continue
-                # 파일 확장자 유추
-                ext = ""
-                ext_m = re.search(r"\.(pdf|hwp|hwpx|xlsx|docx|zip)$", fn, re.IGNORECASE)
-                if ext_m:
-                    ext = ext_m.group(1).lower()
+                    fn = f"file_{sn}.{ext}"
 
-                if atch_ids:
-                    atch_id = atch_ids[0]
-                    dl_url = f"{FILE_DOWN_URL}?atchFileId={atch_id}&fileSn={i}&fileExtsn={ext}"
-                    path = _download_file(self.session, dl_url, fn, download_dir, self.sheet_name)
-                    if path:
-                        file_names.append(fn)
-                        file_paths.append(path)
-                        t = extract_text(path)
-                        if t:
-                            file_texts.append(t)
+                dl_url = f"{FILE_DOWN_URL}?atchFileId={atch_id}&fileSn={sn}&fileExtsn={ext}"
+                path = _download_file(self.session, dl_url, fn, download_dir, self.sheet_name)
+                if path:
+                    file_names.append(fn)
+                    file_paths.append(path)
+                    t = extract_text(path)
+                    if t:
+                        file_texts.append(t)
 
             return content, file_names, file_paths, "\n\n---\n\n".join(file_texts)
         except Exception as e:
@@ -257,9 +254,18 @@ def _download_file(session: requests.Session, url: str, filename: str, download_
 
         cd = resp.headers.get("Content-Disposition", "")
         if cd:
-            m = re.findall(r"filename\*?=(?:UTF-8'')?([^\s;]+)", cd, re.IGNORECASE)
+            # 따옴표로 감싼 filename 안 공백은 [^\s;]+ 로 자르면 확장자가 잘린다 — 따옴표 쌍 우선 매칭
+            m = re.search(r'filename\*?=(?:UTF-8\'\')?"([^"]+)"', cd, re.IGNORECASE)
+            if not m:
+                m = re.search(r"filename\*?=(?:UTF-8'')?([^\s;]+)", cd, re.IGNORECASE)
             if m:
-                filename = urllib.parse.unquote(m[-1].strip("\"'"))
+                filename = urllib.parse.unquote(m.group(1).strip("\"'"))
+                # PIPC는 퍼센트 인코딩 없이 원본 UTF-8 바이트를 헤더에 그대로 실어 보낸다 —
+                # HTTP 헤더는 latin-1로 디코딩되어 파일명이 깨지므로 되돌려서 재해석
+                try:
+                    filename = filename.encode("latin-1").decode("utf-8")
+                except (UnicodeDecodeError, UnicodeEncodeError):
+                    pass
 
         safe = re.sub(r'[\\/:*?"<>|]', "_", filename).strip() or f"file_{abs(hash(url)) % 100000}"
         path = os.path.join(download_dir, f"{prefix}_{safe}")

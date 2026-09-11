@@ -209,6 +209,10 @@ class FssSanctionScraper:
                 href = a["href"]
                 if not any(k in href for k in ["filedown", "download", "atch", "FileDown", "fileSn"]):
                     continue
+                # "문서뷰어" 미리보기 링크 제외 — 실파일이 아니라 빈 응답(Content-Length: 0)을
+                # 반환하는 pdfViewr 페이지라 href에 "download"가 우연히 포함돼도 첨부 대상이 아님
+                if "pdfViewr" in href or "viewType=" in href:
+                    continue
                 fn = a.get_text(strip=True)
                 if not fn:
                     continue
@@ -261,9 +265,19 @@ def _download_file(session: requests.Session, url: str, filename: str, download_
 
         cd = resp.headers.get("Content-Disposition", "")
         if cd:
-            m = re.findall(r"filename\*?=(?:UTF-8'')?([^\s;]+)", cd, re.IGNORECASE)
+            # 따옴표로 감싼 filename은 내부에 (FSS 서버가 보내는) 인코딩 안 된 공백이
+            # 섞여 있을 수 있어 공백 기준으로 자르면 확장자가 잘린다 — 따옴표 쌍을 우선 매칭
+            m = re.search(r'filename\*?=(?:UTF-8\'\')?"([^"]+)"', cd, re.IGNORECASE)
+            if not m:
+                m = re.search(r"filename\*?=(?:UTF-8'')?([^\s;]+)", cd, re.IGNORECASE)
             if m:
-                filename = urllib.parse.unquote(m[-1].strip("\"'"))
+                filename = urllib.parse.unquote(m.group(1).strip("\"'"))
+                # 서버가 퍼센트 인코딩 없이 원본 UTF-8 바이트를 헤더에 그대로 실어 보내면
+                # HTTP 헤더는 latin-1로 디코딩되어 파일명이 깨진다 — 되돌려서 재해석
+                try:
+                    filename = filename.encode("latin-1").decode("utf-8")
+                except (UnicodeDecodeError, UnicodeEncodeError):
+                    pass
 
         safe = re.sub(r'[\\/:*?"<>|]', "_", filename).strip() or f"file_{abs(hash(url)) % 100000}"
         path = os.path.join(download_dir, f"{prefix}_{safe}")
