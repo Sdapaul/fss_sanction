@@ -91,3 +91,25 @@ python-dotenv     로컬 .env 로드
 - 첨부파일 다운로드는 `tempfile.TemporaryDirectory` 안에서 처리 — 실행 후 자동 삭제
 - 사이트 HTML 구조가 바뀌면 각 스크래퍼의 CSS 선택자 수정 필요
 - `_has_next_page()` 는 `.paging`, `.pagination`, `.paginate` 클래스 기반 — 변경 시 업데이트
+
+## 첨부파일 다운로드 시 주의사항 (2026-09-11 버그 3건 수정 후 정리)
+
+리포트 메일이 회사 보안 게이트웨이(Trellix)에 악성으로 오탐된 사건을 조사하며 발견한
+사이트별 함정. 첨부 다운로드 로직을 건드릴 때 다시 재현하지 않도록 기록.
+
+- **FSS "문서뷰어" 링크** (`fss_sanction.py`, `fss_management.py`): 상세페이지의
+  미리보기 버튼 href가 `pdfViewr`/`viewType=` 파라미터를 포함하는데, 이 안에 원본
+  다운로드 경로 문자열이 그대로 박혀 있어 `"download"` 키워드 필터에 우연히 걸린다.
+  이 링크는 실제로 **Content-Length: 0인 빈 응답**만 반환하므로 반드시 제외해야 함
+  (`href`에 `pdfViewr`/`viewType=` 포함 시 skip).
+- **PIPC BBS 첨부** (`pipc_bbs.py`): `atchFileId`를 페이지 전체에서 정규식으로
+  "처음 찾은 값 하나"를 모든 첨부에 재사용하면 안 됨 — 페이지 하단 유관기관 배너
+  아이콘의 `<img src="...?atchFileId=FILE_xxx">`가 먼저 매칭돼 완전히 무관한 파일을
+  받아온다. 반드시 각 `.download` 블록 안 다운로드 버튼의
+  `onclick="fn_egov_downFile(atchFileId, fileSn, ext)"`에서 그 첨부 고유의 값을
+  직접 파싱할 것 (`pipc_agenda.py`가 쓰는 방식과 동일).
+- **Content-Disposition 파일명 파싱** (3개 스크래퍼 공통): `filename="..."` 값 안에
+  인코딩 안 된 공백이 섞여 있을 수 있어 공백 기준으로 자르면 확장자가 통째로
+  날아간다 — 따옴표 쌍을 우선 매칭할 것. PIPC는 퍼센트 인코딩 없이 원본 UTF-8
+  바이트를 헤더에 그대로 실어 보내 HTTP 헤더 latin-1 디코딩 규칙 때문에 파일명이
+  깨지므로 `filename.encode("latin-1").decode("utf-8")`로 복원 필요.
